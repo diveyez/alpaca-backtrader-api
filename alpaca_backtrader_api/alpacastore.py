@@ -229,7 +229,7 @@ class AlpacaStore(with_metaclass(MetaSingleton, object)):
 
         self._env = None  # reference to cerebro for general notifications
         self.broker = None  # broker instance
-        self.datas = list()  # datas that have registered over start
+        self.datas = []
 
         self._orders = collections.OrderedDict()  # map order.ref to oid
         self._ordersrev = collections.OrderedDict()  # map oid to order.ref
@@ -282,7 +282,7 @@ class AlpacaStore(with_metaclass(MetaSingleton, object)):
     def get_notifications(self):
         '''Return the pending "store" notifications'''
         self.notifs.append(None)  # put a mark / threads could still append
-        return [x for x in iter(self.notifs.popleft, None)]
+        return list(iter(self.notifs.popleft, None))
 
     # Alpaca supported granularities
     _GRANULARITIES = {
@@ -298,9 +298,8 @@ class AlpacaStore(with_metaclass(MetaSingleton, object)):
             positions = self.oapi.list_positions()
         except (AlpacaError, AlpacaRequestError,):
             return []
-        if positions:
-            if 'code' in positions[0]._raw:
-                return []
+        if positions and 'code' in positions[0]._raw:
+            return []
         # poslist = positions.get('positions', [])
         return positions
 
@@ -400,7 +399,7 @@ class AlpacaStore(with_metaclass(MetaSingleton, object)):
                                             granularity,
                                             compression)
         except AlpacaError as e:
-            print(str(e))
+            print(e)
             q.put(e.error_response)
             q.put(None)
             return
@@ -495,16 +494,11 @@ class AlpacaStore(with_metaclass(MetaSingleton, object)):
 
         def _granularity_to_timeframe(granularity):
             if granularity in [Granularity.Minute, Granularity.Ticks]:
-                timeframe = TimeFrame.Minute
-            elif granularity == Granularity.Daily:
-                timeframe = TimeFrame.Day
-            elif granularity == 'ticks':
-                timeframe = "minute"
+                return TimeFrame.Minute
+            elif granularity == Granularity.Daily or granularity != 'ticks':
+                return TimeFrame.Day
             else:
-                # default to day if not configured properly. subject to
-                # change.
-                timeframe = TimeFrame.Day
-            return timeframe
+                return "minute"
 
         def _iterate_api_calls():
             """
@@ -519,23 +513,22 @@ class AlpacaStore(with_metaclass(MetaSingleton, object)):
             response = pd.DataFrame()
             while not got_all:
                 timeframe = _granularity_to_timeframe(granularity)
-                r = self.oapi.get_bars(dataname,
-                                       timeframe,
-                                       start.isoformat(),
-                                       curr.isoformat())
-                if r:
-                    earliest_sample = r[0].t
-                    response = pd.concat([r.df, response], axis=0)
-                    if earliest_sample <= (pytz.timezone(NY).localize(
-                            start) if not start.tzname() else start):
-                        got_all = True
-                    else:
-                        delta = timedelta(days=1) if granularity == "day" \
-                            else timedelta(minutes=1)
-                        curr = earliest_sample - delta
-                else:
+                if not (
+                    r := self.oapi.get_bars(
+                        dataname, timeframe, start.isoformat(), curr.isoformat()
+                    )
+                ):
                     # no more data is available, let's return what we have
                     break
+                earliest_sample = r[0].t
+                response = pd.concat([r.df, response], axis=0)
+                if earliest_sample <= (pytz.timezone(NY).localize(
+                        start) if not start.tzname() else start):
+                    got_all = True
+                else:
+                    delta = timedelta(days=1) if granularity == "day" \
+                        else timedelta(minutes=1)
+                    curr = earliest_sample - delta
             return response
 
         def _clear_out_of_market_hours(df):
@@ -615,11 +608,8 @@ class AlpacaStore(with_metaclass(MetaSingleton, object)):
 
         if timeframe == bt.TimeFrame.Ticks:
             method = StreamingMethod.Quote
-        elif timeframe == bt.TimeFrame.Minutes:
-            method = StreamingMethod.MinuteAgg
         else:
             method = StreamingMethod.MinuteAgg
-
         streamer = Streamer(q,
                             api_key=self.p.key_id,
                             api_secret=self.p.secret_key,
@@ -692,12 +682,12 @@ class AlpacaStore(with_metaclass(MetaSingleton, object)):
             self._evt_acct.set()
 
     def order_create(self, order, stopside=None, takeside=None, **kwargs):
-        okwargs = dict()
-        # different data feeds may set _name or _dataname so we cover both
-        okwargs['symbol'] = order.data._name if order.data._name else \
-            order.data._dataname
-        okwargs['qty'] = abs(int(order.created.size))
-        okwargs['side'] = 'buy' if order.isbuy() else 'sell'
+        okwargs = {
+            'symbol': order.data._name or order.data._dataname,
+            'qty': abs(int(order.created.size)),
+            'side': 'buy' if order.isbuy() else 'sell',
+        }
+
         okwargs['type'] = self._ORDEREXECS[order.exectype]
         okwargs['time_in_force'] = "gtc"
         if order.exectype not in [bt.Order.Market, bt.Order.StopTrail,

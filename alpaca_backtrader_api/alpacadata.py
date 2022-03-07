@@ -182,7 +182,7 @@ class AlpacaData(with_metaclass(MetaAlpacaData, DataBase)):
 
         # Create attributes as soon as possible
         self._statelivereconn = False  # if reconnecting in live state
-        self._storedmsg = dict()  # keep pending live message (under None)
+        self._storedmsg = {}
         self.qlive = queue.Queue()
         self._state = self._ST_OVER
 
@@ -216,14 +216,8 @@ class AlpacaData(with_metaclass(MetaAlpacaData, DataBase)):
     def _st_start(self, instart=True, tmout=None):
         if self.p.historical:
             self.put_notification(self.DELAYED)
-            dtend = None
-            if self.todate < float('inf'):
-                dtend = num2date(self.todate)
-
-            dtbegin = None
-            if self.fromdate > float('-inf'):
-                dtbegin = num2date(self.fromdate)
-
+            dtend = num2date(self.todate) if self.todate < float('inf') else None
+            dtbegin = num2date(self.fromdate) if self.fromdate > float('-inf') else None
             self.qhist = self.o.candles(
                 self.p.dataname, dtbegin, dtend,
                 self._timeframe, self._compression,
@@ -236,11 +230,7 @@ class AlpacaData(with_metaclass(MetaAlpacaData, DataBase)):
                                              self.p.timeframe,
                                              tmout=tmout,
                                              data_feed=self.p.data_feed)
-        if instart:
-            self._statelivereconn = self.p.backfill_start
-        else:
-            self._statelivereconn = self.p.backfill
-
+        self._statelivereconn = self.p.backfill_start if instart else self.p.backfill
         if self._statelivereconn:
             self.put_notification(self.DELAYED)
 
@@ -307,15 +297,11 @@ class AlpacaData(with_metaclass(MetaAlpacaData, DataBase)):
 
                 # Process the message according to expected return type
                 if not self._statelivereconn:
-                    if self._laststatus != self.LIVE:
-                        if self.qlive.qsize() <= 1:  # very short live queue
-                            self.put_notification(self.LIVE)
+                    if self._laststatus != self.LIVE and self.qlive.qsize() <= 1:
+                        self.put_notification(self.LIVE)
                     if self.p.timeframe == bt.TimeFrame.Ticks:
                         ret = self._load_tick(msg)
-                    elif self.p.timeframe == bt.TimeFrame.Minutes:
-                        ret = self._load_agg(msg)
                     else:
-                        # might want to act differently in the future
                         ret = self._load_agg(msg)
                     if ret:
                         return True
@@ -370,13 +356,12 @@ class AlpacaData(with_metaclass(MetaAlpacaData, DataBase)):
                     if self._load_history(msg):
                         return True  # loading worked
 
-                    continue  # not loaded ... date may have been seen
-                else:
-                    # End of histdata
-                    if self.p.historical:  # only historical
-                        self.put_notification(self.DISCONNECTED)
-                        self._state = self._ST_OVER
-                        return False  # end of historical
+                    else:
+                        continue  # not loaded ... date may have been seen
+                elif self.p.historical:  # only historical
+                    self.put_notification(self.DISCONNECTED)
+                    self._state = self._ST_OVER
+                    return False  # end of historical
 
                 # Live is also wished - go for it
                 self._state = self._ST_LIVE
